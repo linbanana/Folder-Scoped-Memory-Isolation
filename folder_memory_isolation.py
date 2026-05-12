@@ -3,7 +3,7 @@ title: Folder-Scoped Memory Isolation
 author: linbanana
 author_url: https://github.com/linbanana
 version: 0.0.1
-required_open_webui_version: >= 0.3.0
+required_open_webui_version: >= 0.9.5
 license: MIT
 description: 
     Strict folder isolation for Open WebUI memories. 
