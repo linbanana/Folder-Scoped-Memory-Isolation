@@ -1,4 +1,4 @@
-# Folder-Scoped Memory Isolation for Open WebUI 📂
+# Folder-Scoped Memory Isolation & Atomic Memory for Open WebUI 📂🧠
 
 [English](#english) | [繁體中文](#繁體中文)
 
@@ -6,15 +6,18 @@
 
 ## English
 
-A powerful Filter extension for [Open WebUI](https://github.com/open-webui/open-webui) that provides strict **Folder-level** and **Chat-level** memory isolation. Prevent context leakage between different projects while maintaining full access to the memory management UI.
+A powerful Filter extension for [Open WebUI](https://github.com/open-webui/open-webui) that provides strict **Folder-level** and **Chat-level** memory isolation, combined with intelligent, LLM-based **Atomic Memory Extraction**. 
+
+Prevent context leakage between different projects while maintaining full access to the memory management UI and automatically refining long-term user facts into granular, concise memories.
 
 ### 🌟 Features
 
-- **Folder Isolation**: Memories saved within a folder stay within that folder.
+- **Folder Isolation**: Memories saved within a folder stay strictly within that folder.
+- **LLM Atomic Memory Extraction**: Automatically analyzes dialogue turns to extract concise, long-term personal facts (e.g., job, location, habits, preferences). Ignores ephemeral/technical noise (e.g. coding requests, math, temporary plans).
 - **Global Isolation**: Chats in the root directory maintain their own "global" memory pool, with optional chat-level isolation.
-- **Auto-Cleanup (GC)**: Automatically detects and deletes "orphaned" memories when their associated chat is deleted (triggered on the next interaction).
-- **Smart Duplicate Prevention**: Automatically detects if the AI is reciting existing memories and skips saving to prevent database redundancy.
-- **Bilingual Status Display**: Automatically shows status messages (✅ Saved / 📘 Mems) in Traditional Chinese or English based on the user's Open WebUI settings.
+- **Zero-Risk Fallback**: If the API key is empty, the filter automatically falls back to raw QA pair saving mode, ensuring 100% stability.
+- **Auto-Cleanup (GC)**: Automatically detects and deletes "orphaned" memories when their associated chat is deleted.
+- **Bilingual Status Display**: Automatically shows status messages (`🧠 Extracting...` / `✅ Saved...` / `📘 X mems`) in Traditional Chinese or English based on the user's Open WebUI language setting.
 - **Transparent Tagging**: Uses internal `[F_ID:...]` and `[C_ID:...]` tags that are automatically stripped before reaching the AI or User.
 
 ### 🚀 Installation
@@ -31,43 +34,43 @@ A powerful Filter extension for [Open WebUI](https://github.com/open-webui/open-
 - **max_inject**: (Default: 5) Number of relevant memories to inject into the context.
 - **enable_auto_cleanup**: (Default: True) Automatically delete memories when their parent chat is deleted.
 - **debug_mode**: (Default: True) Enable verbose logging for troubleshooting.
+- **atomic_memory_enabled**: (Default: True) Extract atomic, concise facts instead of saving raw dialog QA pairs.
+- **openai_api_url**: (Default: `https://api.openai.com/v1`) OpenAI-compatible API URL.
+- **openai_api_key**: (Default: `""`) API Key for the endpoint (leave empty to fallback to raw QA mode).
+- **openai_model**: (Default: `gpt-4o-mini`) Model name for extraction.
 
-### 🧪 Test Example: Verify Memory Function
+### 🧪 Test Example: Verify Atomic Memory
 
-1. **Step 1: Create Memory**
-   In a chat, type:
-   > **User**: "I ate pizza today."
-   > 
-   > **AI**: "Sounds great! I'll remember that you had pizza today."
-   > 
-   > *(You should see `✅ Saved to [Folder]` at the bottom)*
+1. **Step 1: Disable Native Personalization Memory**
+   Go to **Settings -> Personalization -> Memory** and turn it **OFF**. This ensures only our filter manages memory.
+   
+2. **Step 2: Create Memory with Noise**
+   Inside a folder chat, type:
+   > **User**: *"I'm so tired today, it was raining heavily and my shoes are completely wet. By the way, I am self-learning Rust recently because I need to write system-level stuff later and my supervisor says Rust is safer than C++. Can you write a Quick Sort in Rust for me?"*
+   
+   *(You should see `🧠 Extracting atomic memory...` then `✅ Saved 1 atomic memories` at the bottom)*
 
-2. **Step 2: Load Memory in New Chat**
-   Click **New Chat** in the same folder/global and type:
-   > **User**: "What did I eat yesterday?"
-   > 
-   > **AI**: "You ate pizza yesterday."
-   > 
-   > *(You should see `📘 1 mems` at the bottom, indicating successful retrieval)*
-
-3. **Step 3: Test Auto-Cleanup (Optional)**
-   1. Delete the "pizza" chat.
-   2. Type anything in a new chat.
-   3. Check **Settings -> Personalization -> Memory**. The memory with that Chat ID should be gone.
+3. **Step 3: Verify the Extracted Fact**
+   Go to **Settings -> Personalization -> Manage Memories**. You will see:
+   `[F_ID:xxx][C_ID:xxx] User is self-learning Rust.`
+   *(Notice that wet shoes, rain, and the quick sort request were successfully filtered out!)*
 
 ---
 
 ## 繁體中文
 
-這是一個為 [Open WebUI](https://github.com/open-webui/open-webui) 設計的強大過濾器擴充功能，為記憶提供嚴格的 **「資料夾級別」** 與 **「對話級別」** 隔離。
+這是一個為 [Open WebUI](https://github.com/open-webui/open-webui) 設計的強大過濾器擴充功能，結合了嚴格的 **「資料夾級別」/「對話級別」記憶隔離** 與基於大模型的 **「原子化記憶提煉 (Atomic Memory Extraction)」**。
+
+防止不同專案之間的脈絡外洩，同時自動將對話中的長期事實與喜好精煉為簡短、獨立的記憶條目。
 
 ### 🌟 核心功能
 
 - **資料夾隔離**：在特定資料夾中產生的記憶，僅會在該資料夾內的對話中被載入。
+- **大模型原子記憶提煉**：自動分析每輪對話，提煉出關於使用者的長期事實與偏好（如工作、居住地、習慣、喜好），自動排除短期技術任務與日常廢話。
 - **全域隔離**：根目錄下的對話擁有獨立的「全域記憶池」，且支援對話間的互相隔離。
+- **安全回退機制**：未設定 API 金鑰時，自動無縫回退至「原始對話儲存模式」，確保 100% 穩定不報錯。
 - **自動清理 (GC)**：當對話被刪除後，該對話產生的孤兒記憶會在下一次互動時自動偵測並刪除。
-- **智慧防重複**：自動偵測 AI 是否正在讀取舊記憶，防止將已知的資訊重複存入資料庫。
-- **雙語狀態顯示**：根據語系設定，自動顯示繁體中文或英文的狀態提示（✅ 已儲存 / 📘 筆記憶）。
+- **雙語狀態顯示**：根據語系設定，自動顯示繁體中文或英文的狀態提示（`🧠 正在提取...` / `✅ 已儲存...` / `📘 筆記憶`）。
 - **透明標籤系統**：使用 `[F_ID:...]` 與 `[C_ID:...]` 標籤，並在傳輸前自動移除。
 
 ### 🚀 安裝步驟
@@ -77,11 +80,30 @@ A powerful Filter extension for [Open WebUI](https://github.com/open-webui/open-
 3. 將 `folder_memory_isolation.py` 的內容貼上。
 4. 點擊 **Save** 並確保已 **Enabled**。
 
-### 🧪 測試範例
+### ⚙️ 設定選項 (Valves)
 
-1. **第一步：建立記憶**
-   輸入：「我今天吃披薩。」（應看到 ✅ 已儲存）
-2. **第二步：驗證載入**
-   在新對話中問：「我昨天吃什麼？」（應看到 📘 1 筆記憶，AI 回答披薩）
-3. **第三步：測試清理**
-   刪除對話後，在下一個對話發言，檢查記憶管理介面，該筆記憶應已自動消失。
+- **enabled**: （預設：True）啟用/停用此過濾器。
+- **intercept_core**: （預設：True）攔截並替換 Open WebUI 原生的全域核心記憶注入。
+- **max_inject**: （預設：5）注入至當前上下文的相關記憶條數上限。
+- **enable_auto_cleanup**: （預設：True）當對話被刪除時，自動清理關聯的記憶。
+- **debug_mode**: （預設：True）啟用詳細日誌輸出，便於調試。
+- **atomic_memory_enabled**: （預設：True）提取原子化、簡短的事實，而非儲存原始問答對。
+- **openai_api_url**: （預設：`https://api.openai.com/v1`）OpenAI 相容的接口網址。
+- **openai_api_key**: （預設：`""`）API 金鑰（若留空，將自動安全回退至傳統對話儲存模式）。
+- **openai_model**: （預設：`gpt-4o-mini`）用於提煉事實的模型名稱。
+
+### 🧪 測試與驗證
+
+1. **第一步：關閉原生個人化記憶**
+   進入 **設定 > 個人化 > 記憶**，將其**關閉**。這能確保只有我們的過濾器控制記憶，防止原生系統儲存無標籤的全域記憶。
+   
+2. **第二步：輸入含有雜訊的測試對話**
+   在特定資料夾的對話中輸入：
+   > **使用者**：「哎呀今天真的累死了，外面雨下得超大害我鞋子都濕透了，心情真差。對了，我最近在自學 Rust 語言，因為我之後可能要寫系統底層，主管說用 Rust 會比 C++ 安全。對了，你可以順便幫我寫一個用 Rust 寫的快速排序法嗎？我現在就要。」
+   
+   *（您會看到 `🧠 正在提取原子記憶...` 然後顯示 `✅ 已成功儲存 1 筆原子記憶至...`）*
+
+3. **第三步：驗證提煉結果**
+   進入 **設定 > 個人化 > 管理記憶**，您會看到一筆精準的條目：
+   `[F_ID:xxx][C_ID:xxx] 使用者最近在自學 Rust 語言`
+   *（鞋子濕、下雨天、寫快速排序法等短期雜訊已成功被大模型過濾！）*

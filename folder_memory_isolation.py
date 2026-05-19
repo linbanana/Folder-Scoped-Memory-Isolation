@@ -1,22 +1,24 @@
 """
-title: Folder-Scoped Memory Isolation
+title: Folder-Scoped Memory Isolation with Atomic Memory
 author: linbanana
 author_url: https://github.com/linbanana
-version: 0.0.2
+version: 0.0.3
 required_open_webui_version: >= 0.9.5
 license: MIT
 description: 
-    Strict folder isolation for Open WebUI memories. 
-    It intercepts the global "Core Memory" leakage while maintaining the management UI.
+    Strict folder isolation and LLM-based Atomic Memory extraction for Open WebUI.
+    It blocks global memory leaks, refines long-term user facts into atomic memories,
+    and supports seamless fallback if no API key is configured.
     
-    為 Open WebUI 記憶提供嚴格的資料夾隔離。
-    在保留管理介面的同時，攔截並替換掉全域性的核心記憶外洩。
+    為 Open WebUI 提供嚴格的資料夾記憶隔離與基於大模型的「原子記憶」提煉功能。
+    攔截並替換掉全域性核心記憶外洩，自動將對話中的長期事實精煉為原子記憶，無金鑰設定時自動無縫回退。
 """
 
 import logging
 import re
 import threading
 import inspect
+import json
 from datetime import datetime
 from typing import Optional, List, Any, Dict, Tuple
 
@@ -74,6 +76,12 @@ class Filter:
         max_inject: int = Field(default=5, description="Maximum number of memories to inject.")
         enable_auto_cleanup: bool = Field(default=True, description="Automatically delete memories when their associated chat is deleted.")
         debug_mode: bool = Field(default=True, description="Enable verbose logging.")
+        
+        # Atomic Memory Settings
+        atomic_memory_enabled: bool = Field(default=True, description="Extract atomic, concise facts instead of saving raw dialog QA pairs.")
+        openai_api_url: str = Field(default="https://api.openai.com/v1", description="OpenAI-compatible API URL.")
+        openai_api_key: str = Field(default="", description="API Key for the endpoint.")
+        openai_model: str = Field(default="gpt-4o-mini", description="Model name for extraction.")
 
     class UserValves(BaseModel):
         show_status: bool = Field(default=True, description="Show status messages in the chat.")
@@ -379,6 +387,67 @@ class Filter:
         self._injected[chat_id] = injected
         return body
 
+    async def _extract_atomic_memories(self, user_text: str, asst_text: str, is_zh: bool) -> List[str]:
+        """使用 LLM 從對話對中提取原子化的個人事實"""
+        if not self.valves.openai_api_key:
+            return []
+
+        try:
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(
+                api_key=self.valves.openai_api_key,
+                base_url=self.valves.openai_api_url.rstrip("/")
+            )
+            
+            lang_instruction = "Please write the extracted facts in Traditional Chinese (繁體中文)." if is_zh else "Please write the extracted facts in English."
+            system_prompt = (
+                "You are a helpful memory extraction assistant. Your job is to extract concise, atomic personal facts "
+                "about the user from the latest dialogue turn.\n\n"
+                "Instructions:\n"
+                "1. Extract ONLY long-term valuable facts (e.g., preferences, job, hobbies, relationships, habits, location).\n"
+                "2. Each fact must be a single, self-contained statement. Avoid pronouns (like 'he', 'she', 'it'), refer to 'User' or '使用者' specifically.\n"
+                "3. Do NOT extract ephemeral, short-term or technical task details (e.g. 'User wants a Python script', 'User is debugging a bug').\n"
+                f"4. {lang_instruction}\n"
+                "5. Output format MUST be a valid JSON list of strings, for example: [\"使用者住在台北\", \"使用者喜歡喝黑咖啡\"].\n"
+                "6. If there are no long-term facts to extract, return an empty list: []."
+            )
+            
+            user_prompt = (
+                f"最新對話：\n"
+                f"User: {user_text}\n"
+                f"Assistant: {asst_text}\n\n"
+                f"請以 JSON 格式提取原子事實："
+            )
+            
+            completion = await client.chat.completions.create(
+                model=self.valves.openai_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+                response_format={"type": "json_object"}
+            )
+            
+            content = completion.choices[0].message.content
+            if self.valves.debug_mode:
+                logger.info(f"[Isolation] LLM Raw Response: {content}")
+                
+            data = json.loads(content)
+            if isinstance(data, list):
+                return [str(item).strip() for item in data if item]
+            elif isinstance(data, dict) and "facts" in data:
+                return [str(item).strip() for item in data["facts"] if item]
+            elif isinstance(data, dict):
+                for val in data.values():
+                    if isinstance(val, list):
+                        return [str(item).strip() for item in val if item]
+            return []
+        except Exception as e:
+            if self.valves.debug_mode:
+                logger.error(f"[Isolation] Error in atomic memory extraction: {e}")
+            return []
+
     async def outlet(self, body: dict, __user__: Optional[dict] = None, __event_emitter__=None, __metadata__: Optional[dict] = None, __request__: Optional[Request] = None) -> dict:
         if not self.valves.enabled or not __user__: return body
         messages = body.get("messages", [])
@@ -388,16 +457,17 @@ class Filter:
 
         uid, fid, chat_id = __user__["id"], await self._extract_folder_id(body, __metadata__), self._get_chat_id(body, __metadata__)
         
-        # ── 防重複儲存邏輯 ──
-        # 1. 檢查 inlet 是否有注入過記憶
-        was_injected = self._injected.pop(chat_id, False)
-        # 2. 檢查訊息中是否帶有隔離標頭
-        has_header = any(MEMORY_HEADER in (m.get("content") or "") for m in messages if m.get("role") == "system")
-        
-        if was_injected or has_header:
-            if self.valves.debug_mode: 
-                logger.info(f"[Isolation] Skip save: Injected={was_injected}, Header={has_header} (chat={chat_id})")
-            return body
+        # ── 防重複儲存邏輯（僅在傳統 RAW 模式下啟用，原子模式下不跳過，以便持續學習） ──
+        if not self.valves.atomic_memory_enabled:
+            was_injected = self._injected.pop(chat_id, False)
+            has_header = any(MEMORY_HEADER in (m.get("content") or "") for m in messages if m.get("role") == "system")
+            if was_injected or has_header:
+                if self.valves.debug_mode: 
+                    logger.info(f"[Isolation] Skip save: Injected={was_injected}, Header={has_header} (chat={chat_id})")
+                return body
+        else:
+            # 清理注入標記，避免記憶洩漏
+            self._injected.pop(chat_id, False)
 
         lang = await self._get_language(uid, body, __request__)
         is_zh = "zh" in lang
@@ -405,21 +475,71 @@ class Filter:
         # 標籤組合：[F_ID:xxx][C_ID:xxx]
         f_tag = f"{FOLDER_TAG_PREFIX}{fid}]" if fid else ""
         c_tag = f"{CHAT_TAG_PREFIX}{chat_id}]" if chat_id != "unknown" else ""
-        
-        raw_pair = f"User: {user[-1]['content'].strip()}\nAssistant: {asst[-1]['content'].strip()}"
-        tagged = f"{f_tag}{c_tag} {raw_pair}" if (f_tag or c_tag) else raw_pair
 
+        user_content = user[-1]['content'].strip()
+        asst_content = asst[-1]['content'].strip()
+
+        # ── 原子化記憶提取 ──
+        memories_to_save = []
+        if self.valves.atomic_memory_enabled and self.valves.openai_api_key:
+            if self.valves.debug_mode:
+                logger.info("[Isolation] Extracting atomic memories using LLM...")
+            
+            if __event_emitter__:
+                status_msg = "🧠 正在提取原子記憶..." if is_zh else "🧠 Extracting atomic memory..."
+                await self._emit_status(__event_emitter__, status_msg, done=False)
+
+            extracted = await self._extract_atomic_memories(user_content, asst_content, is_zh)
+            if extracted:
+                memories_to_save = [f"{f_tag}{c_tag} {fact}" for fact in extracted]
+                if self.valves.debug_mode:
+                    logger.info(f"[Isolation] Extracted {len(extracted)} facts: {extracted}")
+            else:
+                if self.valves.debug_mode:
+                    logger.info("[Isolation] No long-term atomic facts extracted by LLM.")
+                if __event_emitter__:
+                    status_msg = "ℹ️ 無值得記憶的長期事實" if is_zh else "ℹ️ No long-term facts to save"
+                    await self._emit_status(__event_emitter__, status_msg, done=True)
+                return body
+        else:
+            # Fallback: Save raw QA pair
+            if self.valves.debug_mode and self.valves.atomic_memory_enabled:
+                logger.warning("[Isolation] Atomic Memory enabled but API Key is empty. Falling back to raw QA memory.")
+            
+            raw_pair = f"User: {user_content}\nAssistant: {asst_content}"
+            tagged = f"{f_tag}{c_tag} {raw_pair}" if (f_tag or c_tag) else raw_pair
+            memories_to_save = [tagged]
+
+        # ── 執行記憶儲存 ──
+        saved_count = 0
         try:
             user_obj = await self._get_user_obj(uid)
-            await add_memory(request=__request__, form_data=AddMemoryForm(content=tagged), user=user_obj)
+            
+            for mem_content in memories_to_save:
+                await add_memory(request=__request__, form_data=AddMemoryForm(content=mem_content), user=user_obj)
+                saved_count += 1
+            
             self._cache.delete(f"r:{uid}")
             
             f_name = await self._get_folder_name(fid)
             display = f_name if fid else ("全域" if is_zh else "global")
-            if self.valves.debug_mode: logger.info(f"[Isolation] Saved to {display}")
             
-            msg = f"✅ 已儲存至 {display}" if is_zh else f"✅ Saved to {display}"
-            await self._emit_status(__event_emitter__, msg)
+            if saved_count > 0:
+                if self.valves.debug_mode:
+                    logger.info(f"[Isolation] Saved {saved_count} memory entries to {display}")
+                
+                if self.valves.atomic_memory_enabled and self.valves.openai_api_key:
+                    msg = f"✅ 已成功儲存 {saved_count} 筆原子記憶至 {display}" if is_zh else f"✅ Saved {saved_count} atomic memories to {display}"
+                else:
+                    msg = f"✅ 已儲存至 {display}" if is_zh else f"✅ Saved to {display}"
+                
+                await self._emit_status(__event_emitter__, msg, done=True)
+            
         except Exception as e:
-            if self.valves.debug_mode: logger.error(f"[Isolation] Save failed: {e}")
+            if self.valves.debug_mode:
+                logger.error(f"[Isolation] Save failed: {e}")
+            if __event_emitter__:
+                err_msg = "❌ 記憶儲存失敗" if is_zh else "❌ Memory save failed"
+                await self._emit_status(__event_emitter__, err_msg, done=True)
+                
         return body
